@@ -2,13 +2,17 @@ package bitbot
 
 import (
 	"fmt"
+	gorm "github.com/jinzhu/gorm"
+	"github.com/whyrusleeping/hellabot"
+	log "gopkg.in/inconshreveable/log15.v2"
 	"strings"
 	"time"
-
-	"github.com/whyrusleeping/hellabot"
-	bolt "go.etcd.io/bbolt"
-	log "gopkg.in/inconshreveable/log15.v2"
 )
+
+type IdleUserInfo struct {
+	Username string
+	Time     int64
+}
 
 var TrackIdleUsers = NamedTrigger{
 	ID:   "trackIdleUsers",
@@ -26,15 +30,9 @@ var TrackIdleUsers = NamedTrigger{
 }
 
 func (b Bot) TrackIdleUsers(m *hbot.Message) error {
-	err := b.DB.Update(func(tx *bolt.Tx) error {
-		now := int64ToByte(time.Now().Unix())
-		bucket, err := tx.CreateBucketIfNotExists([]byte(m.From))
-		if err != nil {
-			return err
-		}
-		err = bucket.Put([]byte("last_message_time"), []byte(now))
-		return err
-	})
+	var lastUserMessage = IdleUserInfo{Username: m.From, Time: time.Now().Unix()}
+	err := b.DB.Create(&lastUserMessage).Error
+
 	return err
 }
 
@@ -64,25 +62,20 @@ var ReportIdleUsers = NamedTrigger{
 	},
 }
 
-func (b Bot) GetUserIdleTime(nick string) (string, error) {
-	var val []byte
-	err := b.DB.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(nick))
-		c := bucket.Cursor()
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			log.Info(fmt.Sprintf("key=%s, value=%s\n", k, v))
-		}
-		val = bucket.Get([]byte("last_message_time"))
-		return nil
-	})
+func (b Bot) GetUserIdleTime(nick string) (string, error) { // get the last time a person spoke
+	var user IdleUserInfo
+	res := b.DB.Where("Username = ?", nick).First(&user)
+
+	err := res.Error
 	if err != nil {
-		return "", err
+		if gorm.IsRecordNotFoundError(res.Error) {
+			return "", nil
+		} else {
+			return "", err
+		}
 	}
-	if val == nil { // bbolt returns nil on nonexistent keys
-		return "", err
-	}
-	i := byteToInt64(val)
-	ts := time.Unix(i, 0)
+	ts := time.Unix(user.Time, 0)
 	elapsed := fmtDuration(time.Since(ts))
+
 	return elapsed, err
 }
